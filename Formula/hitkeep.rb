@@ -1,8 +1,8 @@
 class Hitkeep < Formula
   desc "Privacy-friendly, self-hosted web analytics"
   homepage "https://hitkeep.com"
-  url "https://github.com/PascaleBeier/hitkeep/archive/refs/tags/v2.14.1.tar.gz"
-  sha256 "8b7acecad0b9a81c3434971b05098695ad1e888a1ea1fd36b8621dc038cf7e7a"
+  url "https://github.com/PascaleBeier/hitkeep/archive/refs/tags/v2.14.2.tar.gz"
+  sha256 "7d53bc410845063d60e733e00bfde19b2e629c4b742171d46b63b9d067a7b469"
   license "MIT"
 
   depends_on "go" => :build
