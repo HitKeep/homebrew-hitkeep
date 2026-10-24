@@ -9,7 +9,7 @@ fi
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 formula="$root/Formula/hitkeep.rb"
-url="https://github.com/PascaleBeier/hitkeep/archive/refs/tags/${tag}.tar.gz"
+url="https://github.com/HitKeep/hitkeep/archive/refs/tags/${tag}.tar.gz"
 checksum="$(curl --fail --silent --show-error --location "$url" | shasum -a 256 | awk '{print $1}')"
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
