@@ -20,12 +20,12 @@ with tempfile.TemporaryDirectory() as temporary:
     with tarfile.open(archive, 'w:gz') as tar:
         for name, content in {'go.mod': 'module hitkeep\n', 'go.sum': '', 'LICENSE': 'MIT\n', 'cmd/hitkeep/main.go': 'package main\n',
                               'frontend/dashboard/package.json': '{"version":"2.15.1"}',
-                              'public/index.html': '<html></html>'}.items():
+                              'public/index.html': '<html></html>', 'public/hk.js': '/* tracker */', 'public/hk-vitals.js': '/* vitals */', 'public/embed.go': 'package public\n'}.items():
             data = content.encode()
             info = tarfile.TarInfo('hitkeep-2.15.1/' + name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
-            if not name.startswith('public/'):
+            if not name.startswith('public/') or name == 'public/embed.go':
                 tree.append({'path': name, 'type': 'blob', 'mode': '100644', 'sha': hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()})
     (temp / 'tree.json').write_text(json.dumps({'truncated': False, 'tree': tree}))
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -135,12 +135,13 @@ else:
         shutil.copy(temp / 'tree.json', fixtures / 'tree.json')
         shutil.copy(archive, fixtures / 'source.tar.gz')
         candidate_manifest = json.loads(json.dumps(manifest))
-        if case in ('traversal', 'extra-member', 'symlink', 'wrong-source', 'missing-source', 'wrong-version', 'duplicate-member', 'malformed-archive', 'wrong-git-pax'):
+        if case in ('traversal', 'extra-member', 'symlink', 'wrong-source', 'missing-source', 'wrong-version', 'duplicate-member', 'malformed-archive', 'wrong-git-pax', 'changed-embed-source', 'extra-go-source'):
             with tarfile.open(archive) as tar:
                 members = [(entry, tar.extractfile(entry).read()) for entry in tar.getmembers()]
             with tarfile.open(fixtures / 'source.tar.gz', 'w:gz') as tar:
                 for entry, data in members:
                     if case == 'missing-source' and entry.name.endswith('/go.sum'): continue
+                    if case == 'changed-embed-source' and entry.name.endswith('/public/embed.go'): data += b'// changed code'
                     if case == 'wrong-source' and entry.name.endswith('/go.mod'): data += b'// wrong source'
                     if case == 'wrong-version' and entry.name.endswith('/package.json'):
                         data = b'{"version":"2.15.2"}'
@@ -151,9 +152,9 @@ else:
                         (fixtures / 'tree.json').write_text(json.dumps(changed_tree))
                     entry.size = len(data)
                     tar.addfile(entry, io.BytesIO(data))
-                if case in ('traversal', 'extra-member', 'symlink', 'duplicate-member'):
+                if case in ('traversal', 'extra-member', 'symlink', 'duplicate-member', 'extra-go-source'):
                     name = {'traversal': 'hitkeep-2.15.1/../escape', 'extra-member': 'hitkeep-2.15.1/private.txt',
-                            'symlink': 'hitkeep-2.15.1/link', 'duplicate-member': 'hitkeep-2.15.1/go.mod'}[case]
+                            'extra-go-source': 'hitkeep-2.15.1/public/evil.go', 'symlink': 'hitkeep-2.15.1/link', 'duplicate-member': 'hitkeep-2.15.1/go.mod'}[case]
                     info = tarfile.TarInfo(name)
                     if case == 'symlink': info.type, info.linkname = tarfile.SYMTYPE, '/etc/passwd'
                     tar.addfile(info)
@@ -216,7 +217,7 @@ else:
                  'digest-conflict', 'tampered', 'private', 'draft', 'prerelease', 'unauthorized-event', 'unauthorized-ref', 'unauthorized-repository',
                  'wrong-run', 'wrong-workflow', 'wrong-event', 'wrong-workflow-sha', 'failed-producer', 'wrong-run-attempt',
                  'missing-check', 'failed-check', 'wrong-schema', 'wrong-artifact-type', 'duplicate-artifact', 'wrong-source-sha',
-                 'traversal', 'extra-member', 'symlink', 'wrong-source', 'missing-source', 'wrong-version', 'duplicate-member', 'malformed-archive', 'wrong-git-pax'):
+                 'traversal', 'extra-member', 'symlink', 'wrong-source', 'missing-source', 'wrong-version', 'duplicate-member', 'malformed-archive', 'wrong-git-pax', 'changed-embed-source', 'extra-go-source'):
         run(case)
     for case in ('protected', 'rules', 'race'):
         run(case, publish=True)

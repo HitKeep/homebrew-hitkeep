@@ -137,6 +137,7 @@ Zlib::GzipReader.open(ARGV.fetch(0)) do |gzip|
       seen[name] = entry.file?
       relative = name.delete_prefix("hitkeep-#{version}/")
       overlay = relative.start_with?('public/') && relative.match?(%r{\Apublic/(?:[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*/)*[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*/?\z})
+      overlay &&= entry.directory? || %w[.html .js .css .json .png .jpg .jpeg .gif .svg .ico .webp .avif .woff .woff2 .ttf .eot .map .txt .xml .wasm].include?(File.extname(relative).downcase)
       if entry.directory? && !relative.empty?
         directory = relative.delete_suffix('/')
         abort 'unexpected source directory' unless tree.fetch('tree').any? { |item| item['type'] == 'tree' && item['path'] == directory } ||
@@ -157,7 +158,7 @@ Zlib::GzipReader.open(ARGV.fetch(0)) do |gzip|
   end
 end
 abort 'dangling archive path metadata' if pax_path
-(blobs.keys + %w[go.mod go.sum LICENSE cmd/hitkeep/main.go frontend/dashboard/package.json public/index.html]).uniq.each do |name|
+(blobs.keys + %w[go.mod go.sum LICENSE cmd/hitkeep/main.go frontend/dashboard/package.json public/index.html public/hk.js public/hk-vitals.js public/embed.go]).uniq.each do |name|
   abort "missing source member #{name}" unless seen["hitkeep-#{version}/#{name}"]
 end
 RUBY

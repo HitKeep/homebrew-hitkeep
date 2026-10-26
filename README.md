@@ -20,7 +20,8 @@ while it owns an installed formula; `brew untap --force` can uninstall it.
 
 Formula updates use the app's public stable release and signed
 `release-candidate.json`, including its exact producer run/attempt, source commit,
-and source archive digest. The source URL is
+and source archive digest. The archive keeps the complete source tree and exact
+Go source, with only verified browser assets overlaid under `public/`. The source URL is
 `https://github.com/HitKeep/hitkeep/releases/download/vX.Y.Z/hitkeep-source-X.Y.Z.tar.gz`.
 A read-only job checks the candidate and installs the source on macOS before a
 separate repository-scoped writer can fast-forward `Formula/hitkeep.rb` on main.
