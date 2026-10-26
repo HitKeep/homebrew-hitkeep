@@ -23,7 +23,8 @@ trap 'rm -rf "$tmp"' EXIT
 cp "$formula" "$tmp/original.rb"
 
 # A malformed formula must never become a partial update.
-ruby - "$formula" > "$tmp/current" <<'RUBY'
+formula_identity() {
+ruby - "$1" <<'RUBY'
 text = File.read(ARGV.fetch(0))
 urls = text.scan(/^  url "([^"]+)"$/).flatten
 checksums = text.scan(/^  sha256 "([0-9a-f]{64})"$/).flatten
@@ -32,6 +33,8 @@ match = urls[0].match(%r{\Ahttps://github\.com/HitKeep/hitkeep/(?:archive/refs/t
 abort 'unrecognized formula source URL' unless match
 puts match.captures.compact.join('.'), urls[0], checksums[0]
 RUBY
+}
+formula_identity "$formula" > "$tmp/current"
 
 if [[ $# == 0 ]]; then
   tag="$(gh api "repos/$source_repo/releases/latest" --jq .tag_name)"
@@ -54,8 +57,7 @@ manifest_id="$(jq -er '[.assets[] | select(.name == "release-candidate.json")] |
 gh api "repos/$source_repo/releases/assets/$manifest_id" -H 'Accept: application/octet-stream' > "$tmp/release-candidate.json"
 manifest="$tmp/release-candidate.json"
 jq -e --arg tag "$tag" '
-  . as $manifest |
-  (["native", "archives", "tracker", "chart", "docker", "compose", "helm", "docs", "assistant-package", "source-archive"] | all(.[]; $manifest.checks[.] == "success")) and
+  .checks == {native:"success", archives:"success", tracker:"success", chart:"success", docker:"success", compose:"success", helm:"success", docs:"success", "assistant-package":"success", "source-archive":"success"} and
   .schema_version == 1 and .tag == $tag and (.source_commit | test("^[0-9a-f]{40}$")) and
   (.producer_workflow_sha | test("^[0-9a-f]{40}$")) and
   (.producer_run_id | type == "number" and . > 0 and . == floor) and
@@ -170,12 +172,16 @@ policy() {
   jq -e 'type == "array" and length == 0' "$tmp/rules.json" >/dev/null || fail 'main rules changed; operator action required'
 }
 policy
-head="$(git rev-parse HEAD)"
-[[ "$(jq -r .commit.sha "$tmp/branch.json")" == "$head" ]] || fail 'main changed; rerun against current main'
-[[ "$(git ls-remote origin refs/heads/main | awk '{print $1}')" == "$head" ]] || fail 'main changed; rerun against current main'
+head="$(jq -r .commit.sha "$tmp/branch.json")"
+[[ "$head" =~ ^[0-9a-f]{40}$ ]] || fail 'invalid current main identity'
+[[ "$(git ls-remote origin refs/heads/main | awk '{print $1}')" == "$head" ]] || fail 'main changed; retry against current main'
 if $publish; then
   [[ -z "$(git status --porcelain)" ]] || fail 'writer checkout must be clean'
 fi
+# Native reruns retain the old workflow SHA; fetch only current main data, never its tooling.
+git fetch --no-tags origin "$head"
+git show "$head:Formula/hitkeep.rb" > "$tmp/current-main.rb"
+formula_identity "$tmp/current-main.rb" > "$tmp/current"
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   printf 'release_tag=%s\nsource_sha=%s\narchive_sha256=%s\n' "$tag" "$source_sha" "$digest" >> "$GITHUB_OUTPUT"
 fi
@@ -193,11 +199,14 @@ if [[ "$disposition" == 0 ]]; then
   echo "matching release: $tag source=$source_sha sha256=$digest"
   exit 0
 fi
+sed '/^  url /d; /^  sha256 /d' "$formula" > "$tmp/original-body"
+sed '/^  url /d; /^  sha256 /d' "$tmp/current-main.rb" > "$tmp/current-body"
+cmp -s "$tmp/original-body" "$tmp/current-body" || fail 'formula tooling changed; dispatch the current reviewed workflow'
 awk -v url="$url" -v checksum="$digest" '
   /^  url "/ { print "  url \"" url "\""; next }
   /^  sha256 "/ { print "  sha256 \"" checksum "\""; next }
   { print }
-' "$formula" > "$tmp/hitkeep.rb"
+' "$tmp/current-main.rb" > "$tmp/hitkeep.rb"
 ruby -c "$tmp/hitkeep.rb" >/dev/null
 check_tag
 if $publish; then
@@ -205,20 +214,23 @@ if $publish; then
   [[ "$(jq -r .commit.sha "$tmp/branch.json")" == "$head" ]] || fail 'main changed before write'
 fi
 cmp -s "$formula" "$tmp/original.rb" || fail 'formula changed before write'
-chmod 644 "$tmp/hitkeep.rb"
-mv "$tmp/hitkeep.rb" "$formula"
 if $publish; then
-  git diff --check
-  [[ "$(git diff --name-only)" == Formula/hitkeep.rb ]] || fail 'unexpected changed path'
-  git config user.name 'github-actions[bot]'
-  git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-  git add -- Formula/hitkeep.rb
-  [[ "$(git diff --name-only --cached)" == Formula/hitkeep.rb ]] || fail 'unexpected staged path'
-  git commit -m "chore: update HitKeep to $version"
+  tree="$(
+    export GIT_INDEX_FILE="$tmp/index"
+    git read-tree "$head"
+    blob="$(git hash-object -w "$tmp/hitkeep.rb")"
+    git update-index --add --cacheinfo 100644 "$blob" Formula/hitkeep.rb
+    git write-tree
+  )"
+  [[ "$(git diff-tree --no-commit-id --name-only -r "$head" "$tree")" == Formula/hitkeep.rb ]] || fail 'unexpected staged path'
+  git diff-tree --check "$head" "$tree"
+  written="$(git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit-tree "$tree" -p "$head" -m "chore: update HitKeep to $version")"
   gh auth setup-git
-  git push origin HEAD:refs/heads/main
-  written="$(git rev-parse HEAD)"
+  git push origin "$written:refs/heads/main"
   [[ "$(git ls-remote origin refs/heads/main | awk '{print $1}')" == "$written" ]] || fail 'formula main readback mismatch'
+else
+  chmod 644 "$tmp/hitkeep.rb"
+  mv "$tmp/hitkeep.rb" "$formula"
 fi
 [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "changed=true" >> "$GITHUB_OUTPUT"
 echo "formula updated: $tag source=$source_sha sha256=$digest url=$url output_ref=refs/heads/main output_commit=${written:-verification-only}"

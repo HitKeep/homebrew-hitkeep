@@ -34,8 +34,11 @@ workflow on main with all three exact inputs: `release_tag`, `source_sha`, and
 used by the schedule. Matching URL/digest retries are no-ops, older releases cannot
 downgrade the formula, and conflicting bytes for the same version stop the run.
 If another update wins a race, rerun against current main to revalidate its state.
-After a push that lost its completion response, the next run reads back main and
-verifies the matching formula instead of creating another commit.
+After a push that lost its completion response, a native rerun keeps its original
+workflow tooling and reads current main’s formula as data. A matching formula
+creates no new commit; a newer version is preserved. Updates preserve unrelated
+main changes and refuse changed formula build logic until a fresh reviewed
+workflow is dispatched.
 
 The app's existing `channel` recovery handles candidate run/attempt selection and
 reruns dependent delivery jobs. For a receiver-only failure, rerun this workflow;

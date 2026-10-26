@@ -97,7 +97,24 @@ if args[:2] == ['rev-parse', 'HEAD']:
 elif args[:2] == ['status', '--porcelain']:
     pass
 elif args[:2] == ['ls-remote', 'origin']:
-    print(('d' if os.environ['CASE'] == 'race' else 'c')*40 + '\\trefs/heads/main')
+    written = pathlib.Path(os.environ['WRITES'])
+    pushed = written.exists() and 'push origin' in written.read_text()
+    print(('e' if pushed else ('d' if os.environ['CASE'] == 'race' else 'c'))*40 + '\\trefs/heads/main')
+elif args[0] == 'show':
+    sys.stdout.write(pathlib.Path(os.environ['FORMULA_INPUT']).read_text())
+elif args[0] == 'hash-object':
+    formula = pathlib.Path(args[-1]).read_text()
+    assert os.environ['DIGEST'] in formula and '/releases/download/v2.15.1/hitkeep-source-2.15.1.tar.gz' in formula
+    print('f'*40)
+elif args[0] == 'write-tree':
+    print('e'*40)
+elif args[0] == 'diff-tree':
+    if '--name-only' in args: print('Formula/hitkeep.rb')
+elif 'commit-tree' in args:
+    with open(os.environ['WRITES'], 'a') as file: file.write(' '.join(args) + '\\n')
+    print('e'*40)
+elif args[0] in ('read-tree', 'update-index'):
+    pass
 elif args[:3] == ['diff', '--name-only', '--cached']:
     print('Formula/hitkeep.rb')
 elif args[:2] == ['diff', '--quiet']:
@@ -130,6 +147,8 @@ else:
         path = work / 'Formula/hitkeep.rb'
         path.write_text(formula)
         writes = work / 'writes'
+        remote_formula = work / 'main.rb'
+        remote_formula.write_text(formula + ('\n# changed tooling\n' if case == 'tooling-drift' else ''))
         fixtures = work / 'fixtures'
         fixtures.mkdir()
         shutil.copy(temp / 'tree.json', fixtures / 'tree.json')
@@ -182,6 +201,7 @@ else:
                               pax_headers={'comment': ('d' if case == 'wrong-git-pax' else 'a')*40}) as tar:
                 for entry, data in members: tar.addfile(entry, io.BytesIO(data))
             candidate_manifest['artifacts'][0]['sha256'] = hashlib.sha256((fixtures / 'source.tar.gz').read_bytes()).hexdigest()
+        if case == 'extra-check': candidate_manifest['checks']['unrecognized'] = 'success'
         if case == 'missing-check': del candidate_manifest['checks']['source-archive']
         if case == 'failed-check': candidate_manifest['checks']['native'] = 'failure'
         if case == 'wrong-schema': candidate_manifest['schema_version'] = 2
@@ -191,7 +211,7 @@ else:
         candidate_digest = candidate_manifest['artifacts'][0]['sha256']
         (fixtures / 'manifest.json').write_text(json.dumps(candidate_manifest))
         env = dict(os.environ, PATH=str(fake) + ':' + os.environ['PATH'], CASE=case, FIXTURES=str(fixtures),
-                   WRITES=str(writes), DIGEST=candidate_digest, GITHUB_REPOSITORY='HitKeep/homebrew-hitkeep',
+                   WRITES=str(writes), FORMULA_INPUT=str(remote_formula), DIGEST=candidate_digest, GITHUB_REPOSITORY='HitKeep/homebrew-hitkeep',
                    GITHUB_REF='refs/heads/main', GITHUB_ACTOR='release-operator')
         if case == 'unauthorized-event': env['GITHUB_EVENT_NAME'] = 'pull_request'
         if case == 'unauthorized-ref': env['GITHUB_REF'] = 'refs/heads/topic'
@@ -205,9 +225,12 @@ else:
             assert path.read_text() == formula, (case, 'changed formula on rejection')
             assert not writes.exists(), (case, 'writer called on rejection')
         if success and current in ('2.15.0', '2.9.9'):
-            assert 'releases/download/v2.15.1/hitkeep-source-2.15.1.tar.gz' in path.read_text(), case
-            assert candidate_digest in path.read_text(), case
-            if publish: assert 'push origin HEAD:refs/heads/main' in writes.read_text()
+            if publish:
+                assert 'push origin ' + 'e'*40 + ':refs/heads/main' in writes.read_text()
+                assert path.read_text() == formula, 'writer must preserve original workflow checkout'
+            else:
+                assert 'releases/download/v2.15.1/hitkeep-source-2.15.1.tar.gz' in path.read_text(), case
+                assert candidate_digest in path.read_text(), case
         if success and current not in ('2.15.0', '2.9.9'):
             assert path.read_text() == formula and not writes.exists(), case
         print('PASS', case)
@@ -216,10 +239,10 @@ else:
     for case in ('malformed', 'malformed-invalid', 'network', 'auth', 'curl-failure', 'moved-tag', 'wrong-signer', 'wrong-attempt',
                  'digest-conflict', 'tampered', 'private', 'draft', 'prerelease', 'unauthorized-event', 'unauthorized-ref', 'unauthorized-repository',
                  'wrong-run', 'wrong-workflow', 'wrong-event', 'wrong-workflow-sha', 'failed-producer', 'wrong-run-attempt',
-                 'missing-check', 'failed-check', 'wrong-schema', 'wrong-artifact-type', 'duplicate-artifact', 'wrong-source-sha',
+                 'extra-check', 'missing-check', 'failed-check', 'wrong-schema', 'wrong-artifact-type', 'duplicate-artifact', 'wrong-source-sha',
                  'traversal', 'extra-member', 'symlink', 'wrong-source', 'missing-source', 'wrong-version', 'duplicate-member', 'malformed-archive', 'wrong-git-pax', 'changed-embed-source', 'extra-go-source'):
         run(case)
-    for case in ('protected', 'rules', 'race'):
+    for case in ('protected', 'rules', 'race', 'tooling-drift'):
         run(case, publish=True)
     run('valid', success=True)
     run('git-pax', success=True)
@@ -254,10 +277,20 @@ else:
     initial = git('rev-parse', 'HEAD')
     second = temp / 'second-writer'
     git('clone', '--branch', 'main', str(remote), str(second))
+    upstream = temp / 'advanced-main'
+    git('clone', '--branch', 'main', str(remote), str(upstream))
+    git('config', 'user.name', 'Fixture', cwd=upstream)
+    git('config', 'user.email', 'fixture@example.test', cwd=upstream)
+    (upstream / 'editorial.txt').write_text('preserve this concurrent change')
+    (upstream / 'scripts/update-formula.sh').write_text('#!/usr/bin/env bash\nexit 94\n')
+    git('add', '.', cwd=upstream)
+    git('commit', '-m', 'advance main without changing formula', cwd=upstream)
+    git('push', 'origin', 'HEAD:main', cwd=upstream)
+    dispatch_head = git('rev-parse', 'HEAD', cwd=upstream)
     # Leave the rest of the fakes in place while testing Git's actual writer.
     (fake / 'git').rename(fake / 'git-disabled')
     env = dict(os.environ, PATH=str(fake) + ':' + os.environ['PATH'], CASE='real-writer', FIXTURES=str(temp),
-               WRITES=str(temp / 'real-writes'), DIGEST=digest, HEAD_SHA=initial,
+               WRITES=str(temp / 'real-writes'), DIGEST=digest, HEAD_SHA=dispatch_head,
                GITHUB_REPOSITORY='HitKeep/homebrew-hitkeep', GITHUB_REF='refs/heads/main', GITHUB_ACTOR='release-operator')
     args = ['bash', 'scripts/update-formula.sh', '--publish', 'v2.15.1', sha, digest]
     first = subprocess.Popen(args, cwd=writer, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -265,15 +298,35 @@ else:
     results = [(*process.communicate(), process.returncode) for process in (first, other)]
     assert sum(code == 0 for _, _, code in results) == 1, results
     after = git('rev-parse', 'refs/heads/main', cwd=remote)
-    assert git('rev-list', '--count', initial + '..' + after, cwd=remote) == '1'
+    assert git('rev-list', '--count', dispatch_head + '..' + after, cwd=remote) == '1'
+    assert git('show', 'main:editorial.txt', cwd=remote) == 'preserve this concurrent change'
+    assert git('show', 'main:scripts/update-formula.sh', cwd=remote) == '#!/usr/bin/env bash\nexit 94'
     formula_readback = git('show', 'main:Formula/hitkeep.rb', cwd=remote)
     assert digest in formula_readback and '/releases/download/v2.15.1/hitkeep-source-2.15.1.tar.gz' in formula_readback
     recovered = temp / 'recovered'
     git('clone', '--branch', 'main', str(remote), str(recovered))
+    git('checkout', '--detach', initial, cwd=recovered)
     env['HEAD_SHA'] = after
     retry = subprocess.run(args, cwd=recovered, env=env, capture_output=True, text=True)
     assert retry.returncode == 0 and 'matching release:' in retry.stdout, (retry.stdout, retry.stderr)
     assert git('rev-parse', 'refs/heads/main', cwd=remote) == after
-    print('PASS concurrent fast-forward and interruption-after-push recovery')
+    assert git('rev-parse', 'HEAD', cwd=recovered) == initial
+    assert (recovered / 'scripts/update-formula.sh').read_bytes() == (root / 'scripts/update-formula.sh').read_bytes()
+    newer = temp / 'newer-main'
+    git('clone', '--branch', 'main', str(remote), str(newer))
+    git('config', 'user.name', 'Fixture', cwd=newer)
+    git('config', 'user.email', 'fixture@example.test', cwd=newer)
+    next_formula = (newer / 'Formula/hitkeep.rb')
+    next_formula.write_text(next_formula.read_text().replace('2.15.1', '2.16.0').replace(digest, '9'*64))
+    git('add', 'Formula/hitkeep.rb', cwd=newer)
+    git('commit', '-m', 'newer release', cwd=newer)
+    git('push', 'origin', 'HEAD:main', cwd=newer)
+    newest = git('rev-parse', 'HEAD', cwd=newer)
+    env['HEAD_SHA'] = newest
+    old_retry = subprocess.run(args, cwd=recovered, env=env, capture_output=True, text=True)
+    assert old_retry.returncode == 0 and 'older release skipped:' in old_retry.stdout, (old_retry.stdout, old_retry.stderr)
+    assert git('rev-parse', 'refs/heads/main', cwd=remote) == newest
+    assert '2.16.0' in git('show', 'main:Formula/hitkeep.rb', cwd=remote)
+    print('PASS concurrent fast-forward and original-workflow-SHA matching/newer-main recovery')
 print('all formula receiver fixtures passed')
 PY
