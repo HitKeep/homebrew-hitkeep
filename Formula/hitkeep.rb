@@ -11,7 +11,7 @@ class Hitkeep < Formula
     ENV["CGO_ENABLED"] = "1"
     ENV["GOTOOLCHAIN"] = "auto"
     ldflags = "-X hitkeep/cmd.Version=#{version}"
-    system "go", "build", *std_go_args(ldflags:),
+    system "go", "build", *std_go_args(ldflags: ldflags),
            "-tags", "hashicorpmetrics,timetzdata", "./cmd/hitkeep/main.go"
   end
 
