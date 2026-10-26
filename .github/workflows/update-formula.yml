@@ -2,46 +2,92 @@ name: Update formula
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable app release tag (leave all three inputs empty to reconcile latest)
+        type: string
+      source_sha:
+        description: Exact app source commit
+        type: string
+      archive_sha256:
+        description: Signed candidate source archive SHA256
+        type: string
   schedule:
     - cron: "17 */6 * * *"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: update-formula
   cancel-in-progress: false
 
 jobs:
-  update:
-    runs-on: ubuntu-latest
+  verify:
+    if: github.repository == 'HitKeep/homebrew-hitkeep' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    runs-on: macos-latest
+    outputs:
+      release_tag: ${{ steps.verify.outputs.release_tag }}
+      source_sha: ${{ steps.verify.outputs.source_sha }}
+      archive_sha256: ${{ steps.verify.outputs.archive_sha256 }}
+      changed: ${{ steps.verify.outputs.changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.2
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Update to latest stable HitKeep release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Check receiver fault fixtures
         run: |
-          set -euo pipefail
-          tag="$(gh api repos/HitKeep/hitkeep/releases/latest --jq .tag_name)"
-          ./scripts/update-formula.sh "$tag"
+          ./tests/test-update-formula.sh
+          ./tests/test-formula-smoke.sh
           ruby -c Formula/hitkeep.rb
-          git diff --check
-
-      - name: Publish formula update
+      - name: Verify stable source candidate
+        id: verify
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
         run: |
           set -euo pipefail
-          if git diff --quiet; then
-            exit 0
+          if [[ -n "$RELEASE_TAG$SOURCE_SHA$ARCHIVE_SHA256" ]]; then
+            ./scripts/update-formula.sh "$RELEASE_TAG" "$SOURCE_SHA" "$ARCHIVE_SHA256" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            ./scripts/update-formula.sh | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-          version="$(sed -nE 's|.*/v([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz"|\1|p' Formula/hitkeep.rb)"
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Formula/hitkeep.rb
-          git commit -m "chore: update HitKeep to ${version}"
-          gh auth setup-git
-          git push
+          git diff --check
+      - name: Audit and install verified source
+        if: steps.verify.outputs.changed == 'true'
+        env:
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          EXPECTED_VERSION: ${{ steps.verify.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          brew tap-new --no-git hitkeep/candidate
+          cp Formula/hitkeep.rb "$(brew --repository hitkeep/candidate)/Formula/hitkeep.rb"
+          brew audit --strict --online hitkeep/candidate/hitkeep
+          brew install --build-from-source hitkeep/candidate/hitkeep
+          brew test hitkeep/candidate/hitkeep
+          "$(brew --prefix hitkeep/candidate/hitkeep)/bin/hitkeep" --version |
+            ruby -e 'expected = Regexp.escape(ENV.fetch("EXPECTED_VERSION").delete_prefix("v")); abort "installed version mismatch" unless STDIN.read.match?(/(?:\A|[^0-9.])#{expected}(?:\z|[^0-9.])/)'
+
+  publish:
+    needs: verify
+    if: needs.verify.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Revalidate and fast-forward formula only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.verify.outputs.source_sha }}
+          ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          ./scripts/update-formula.sh --publish "$RELEASE_TAG" "$SOURCE_SHA" "$ARCHIVE_SHA256" | tee -a "$GITHUB_STEP_SUMMARY"
