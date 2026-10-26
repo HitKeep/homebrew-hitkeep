@@ -39,6 +39,7 @@ jobs:
       - name: Check receiver fault fixtures
         run: |
           ./tests/test-update-formula.sh
+          ./tests/test-formula-smoke.sh
           ruby -c Formula/hitkeep.rb
       - name: Verify stable source candidate
         id: verify
