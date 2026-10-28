@@ -51,6 +51,11 @@ class Formula
     socket.close
     port
   end
+  def system(*args)
+    raise TypeError, 'Formula#system does not accept redirection options' if args.any? { |arg| arg.is_a?(Hash) }
+    raise 'Formula#system command failed' unless Kernel.system(*args)
+  end
+  def quiet_system(*args); Kernel.system(*args, out: File::NULL, err: File::NULL); end
   def assert(value, message = 'assertion failed'); raise message unless value; end
   def assert_equal(expected, actual); assert(expected == actual); end
   def assert_operator(value, operator, expected); assert(value.public_send(operator, expected)); end

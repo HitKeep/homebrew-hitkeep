@@ -37,7 +37,7 @@ class Hitkeep < Formula
     begin
       healthy = false
       30.times do
-        if system((bin/"hitkeep").to_s, "-healthcheck", out: File::NULL, err: File::NULL)
+        if quiet_system((bin/"hitkeep").to_s, "-healthcheck")
           healthy = true
           break
         end
