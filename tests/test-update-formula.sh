@@ -244,7 +244,7 @@ else:
         run(case)
     for case in ('protected', 'rules', 'race', 'tooling-drift'):
         run(case, publish=True)
-    run('valid', success=True)
+    verified = run('valid', success=True)
     run('git-pax', success=True)
     run('manual-producer', success=True)
     run('long-source-path', success=True)
@@ -254,6 +254,52 @@ else:
     run('immutable-conflict', current='2.15.1', checksum='0'*64)
     run('stale-retry', current='2.16.0', success=True)
     run('numeric-order', current='2.9.9', success=True)
+
+    # Execute the actual CI install block against a trust-enforcing Homebrew double.
+    steps = json.loads(subprocess.check_output(['ruby', '-ryaml', '-rjson', '-e',
+        'puts JSON.generate(YAML.load_file(ARGV.fetch(0)).fetch("jobs").fetch("verify").fetch("steps"))',
+        str(root / '.github/workflows/update-formula.yml')], text=True))
+    install = next(step for step in steps if step.get('name') == 'Audit and install verified source')
+    assert steps.index(next(step for step in steps if step.get('id') == 'verify')) < steps.index(install)
+    assert install['if'] == "steps.verify.outputs.changed == 'true'"
+    (fake / 'brew').write_text('''#!/usr/bin/env python3
+import os, pathlib, sys
+args = sys.argv[1:]
+tap = pathlib.Path(os.environ['CANDIDATE_TAP'])
+trusted = tap / 'trusted'
+if args == ['tap-new', '--no-git', 'hitkeep/candidate']:
+    (tap / 'Formula').mkdir(parents=True)
+elif args == ['--repository', 'hitkeep/candidate']:
+    print(tap)
+elif args == ['trust', '--formula', 'hitkeep/candidate/hitkeep']:
+    assert (tap / 'Formula/hitkeep.rb').read_bytes() == pathlib.Path('Formula/hitkeep.rb').read_bytes()
+    if os.environ['TRUST_FAIL'] == '1': sys.exit(1)
+    trusted.touch()
+elif args in (['audit', '--strict', '--online', 'hitkeep/candidate/hitkeep'],
+              ['install', '--build-from-source', 'hitkeep/candidate/hitkeep'],
+              ['test', 'hitkeep/candidate/hitkeep']):
+    assert trusted.exists(), 'Homebrew refused untrusted formula evaluation'
+    with (tap / 'evaluated').open('a') as log: log.write(args[0] + '\\n')
+elif args == ['--prefix', 'hitkeep/candidate/hitkeep']:
+    print(tap)
+else:
+    raise AssertionError(('unexpected trust scope or command', args))
+''')
+    (fake / 'brew').chmod(0o755)
+    for trust_fail in ('0', '1'):
+        tap = temp / ('candidate-' + trust_fail)
+        (tap / 'bin').mkdir(parents=True)
+        (tap / 'bin/hitkeep').write_text('#!/bin/sh\necho 2.15.1\n')
+        (tap / 'bin/hitkeep').chmod(0o755)
+        env = dict(os.environ, PATH=str(fake) + ':' + os.environ['PATH'], CANDIDATE_TAP=str(tap),
+                   TRUST_FAIL=trust_fail, EXPECTED_VERSION='v2.15.1')
+        result = subprocess.run(['bash', '-c', install['run']], cwd=verified, env=env, capture_output=True, text=True)
+        assert (result.returncode == 0) == (trust_fail == '0'), (result.stdout, result.stderr)
+        if trust_fail == '0':
+            assert (tap / 'evaluated').read_text().splitlines() == ['audit', 'install', 'test']
+        else:
+            assert not (tap / 'evaluated').exists(), 'formula evaluated after failed trust'
+    print('PASS candidate-only trust after verification/copy, before evaluation, and failed-trust stop')
 
     # A real local bare remote proves fast-forward concurrency and retry recovery.
     real_git = shutil.which('git')

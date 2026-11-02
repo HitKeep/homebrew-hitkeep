@@ -65,6 +65,7 @@ jobs:
           set -euo pipefail
           brew tap-new --no-git hitkeep/candidate
           cp Formula/hitkeep.rb "$(brew --repository hitkeep/candidate)/Formula/hitkeep.rb"
+          brew trust --formula hitkeep/candidate/hitkeep
           brew audit --strict --online hitkeep/candidate/hitkeep
           brew install --build-from-source hitkeep/candidate/hitkeep
           brew test hitkeep/candidate/hitkeep
