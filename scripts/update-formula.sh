@@ -147,8 +147,11 @@ Zlib::GzipReader.open(ARGV.fetch(0)) do |gzip|
       end
       if entry.file?
         data = entry.read || ''
-        if blobs.key?(relative) && !overlay
-          abort 'source member differs from source commit' unless Digest::SHA1.hexdigest("blob #{data.bytesize}\0" + data) == blobs[relative].fetch('sha')
+        blob = blobs[relative]
+        # Dashboard packaging copies attribution Markdown from its public/ source tree.
+        blob ||= blobs["frontend/dashboard/#{relative}"] if relative.start_with?('public/') && File.extname(relative) == '.md'
+        if blob && !overlay
+          abort 'source member differs from source commit' unless Digest::SHA1.hexdigest("blob #{data.bytesize}\0" + data) == blob.fetch('sha')
         else
           abort 'unexpected source member' unless overlay
         end
