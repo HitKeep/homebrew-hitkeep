@@ -131,7 +131,7 @@ else:
 ''')
     for path in fake.iterdir(): path.chmod(0o755)
 
-    def run(case, *, publish=False, current='2.15.0', checksum=None, success=False, explicit=True):
+    def run(case, *, publish=False, current='2.15.0', checksum=None, success=False, explicit=True, error=None):
         global count
         work = temp / ('work-' + str(count))
         count += 1
@@ -201,6 +201,35 @@ else:
                               pax_headers={'comment': ('d' if case == 'wrong-git-pax' else 'a')*40}) as tar:
                 for entry, data in members: tar.addfile(entry, io.BytesIO(data))
             candidate_manifest['artifacts'][0]['sha256'] = hashlib.sha256((fixtures / 'source.tar.gz').read_bytes()).hexdigest()
+        if case.startswith('dashboard-markdown'):
+            # package-source.sh copies dashboard public/ into the source archive using PAX.
+            name = 'public/icons/social-auth/apple-assets.md'
+            if case == 'dashboard-markdown-code': name = name.removesuffix('.md') + '.go'
+            data = b'# Sign in with Apple logo images\nAsset attribution.\n'
+            source = 'frontend/dashboard/' + name
+            changed_tree = json.loads((fixtures / 'tree.json').read_text())
+            changed_tree['tree'].append({'path': source, 'type': 'blob', 'mode': '100644',
+                                        'sha': hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()})
+            (fixtures / 'tree.json').write_text(json.dumps(changed_tree))
+            with tarfile.open(archive) as tar:
+                members = [(entry, tar.extractfile(entry).read()) for entry in tar.getmembers()]
+            with tarfile.open(fixtures / 'source.tar.gz', 'w:gz', format=tarfile.PAX_FORMAT) as tar:
+                for entry, content in members: tar.addfile(entry, io.BytesIO(content))
+                original = tarfile.TarInfo('hitkeep-2.15.1/' + source)
+                original.size = len(data)
+                tar.addfile(original, io.BytesIO(data))
+                if case == 'dashboard-markdown-untracked': name = name.replace('apple-assets', 'untracked')
+                if case == 'dashboard-markdown-traversal': name = 'public/../' + name
+                if case == 'dashboard-markdown-changed': data += b'changed'
+                copied = tarfile.TarInfo('hitkeep-2.15.1/' + name)
+                if case in ('dashboard-markdown-symlink', 'dashboard-markdown-hardlink'):
+                    copied.type = tarfile.SYMTYPE if case.endswith('symlink') else tarfile.LNKTYPE
+                    copied.linkname = original.name
+                    tar.addfile(copied)
+                else:
+                    copied.size = len(data)
+                    tar.addfile(copied, io.BytesIO(data))
+            candidate_manifest['artifacts'][0]['sha256'] = hashlib.sha256((fixtures / 'source.tar.gz').read_bytes()).hexdigest()
         if case == 'extra-check': candidate_manifest['checks']['unrecognized'] = 'success'
         if case == 'missing-check': del candidate_manifest['checks']['source-archive']
         if case == 'failed-check': candidate_manifest['checks']['native'] = 'failure'
@@ -221,6 +250,7 @@ else:
         if explicit: args += ['v2.15.1', sha, '0'*64 if case == 'digest-conflict' else candidate_digest]
         result = subprocess.run(args, env=env, text=True, capture_output=True)
         assert (result.returncode == 0) == success, (case, result.returncode, result.stdout, result.stderr)
+        if error is not None: assert error in result.stderr, (case, result.stderr)
         if not success:
             assert path.read_text() == formula, (case, 'changed formula on rejection')
             assert not writes.exists(), (case, 'writer called on rejection')
@@ -236,6 +266,12 @@ else:
         print('PASS', case)
         return work
 
+    run('dashboard-markdown', success=True)
+    for suffix, error in (('changed', 'source member differs from source commit'),
+                          ('untracked', 'unexpected source member'), ('code', 'unexpected source member'),
+                          ('symlink', 'duplicate or linked source member'), ('hardlink', 'duplicate or linked source member'),
+                          ('traversal', 'unsafe source archive path')):
+        run('dashboard-markdown-' + suffix, error=error)
     for case in ('malformed', 'malformed-invalid', 'network', 'auth', 'curl-failure', 'moved-tag', 'wrong-signer', 'wrong-attempt',
                  'digest-conflict', 'tampered', 'private', 'draft', 'prerelease', 'unauthorized-event', 'unauthorized-ref', 'unauthorized-repository',
                  'wrong-run', 'wrong-workflow', 'wrong-event', 'wrong-workflow-sha', 'failed-producer', 'wrong-run-attempt',
