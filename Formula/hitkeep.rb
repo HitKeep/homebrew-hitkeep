@@ -1,8 +1,8 @@
 class Hitkeep < Formula
   desc "Privacy-friendly, self-hosted web analytics"
   homepage "https://hitkeep.com"
-  url "https://github.com/HitKeep/hitkeep/releases/download/v2.17.0/hitkeep-source-2.17.0.tar.gz"
-  sha256 "1985f77d6275dda36caf2c2eaab72162b2c278caa558b12917720dfb0f50c411"
+  url "https://github.com/HitKeep/hitkeep/releases/download/v2.18.0/hitkeep-source-2.18.0.tar.gz"
+  sha256 "6a081e83aec969f665f418ef94f909b8bea59b3184bf78f8258d5eb741a90d82"
   license "MIT"
 
   depends_on "go" => :build
