@@ -35,15 +35,22 @@ class Hitkeep < Formula
 
     pid = spawn (bin/"hitkeep").to_s, chdir: testpath.to_s, out: File::NULL, err: File::NULL
     begin
-      healthy = false
-      30.times do
-        if quiet_system((bin/"hitkeep").to_s, "-healthcheck")
-          healthy = true
+      # A fresh DuckDB can still be migrating after 30 probes on Linux AMD64.
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      loop do
+        if (exited = Process.waitpid2(pid, Process::WNOHANG))
+          pid = nil
+          flunk "installed HitKeep exited before becoming healthy: #{exited.last}"
+        end
+        healthy = quiet_system((bin/"hitkeep").to_s, "-healthcheck")
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+        assert_operator elapsed, :<, 90, "installed HitKeep did not become healthy"
+        if healthy
+          puts format("HitKeep became healthy after %.1fs", elapsed)
           break
         end
         sleep 1
       end
-      assert healthy, "installed HitKeep did not become healthy"
       %w[/ /hk.js /hk-vitals.js].each do |path|
         response = Net::HTTP.get_response(URI("http://#{address}#{path}"))
         assert_equal "200", response.code
@@ -56,8 +63,10 @@ class Hitkeep < Formula
       end
     ensure
       begin
-        Process.kill("TERM", pid)
-        Timeout.timeout(10) { Process.wait(pid) }
+        if pid
+          Process.kill("TERM", pid)
+          Timeout.timeout(10) { Process.wait(pid) }
+        end
       rescue Timeout::Error
         Process.kill("KILL", pid)
         Process.wait(pid)

@@ -14,9 +14,13 @@ address = os.environ['HITKEEP_HTTP_ADDR']
 if '-healthcheck' in sys.argv:
     try:
         with urllib.request.urlopen('http://' + address + '/healthz', timeout=1) as response:
+            if response.status == 200 and os.environ['CASE'] == 'late':
+                pathlib.Path(os.environ['SCRATCH'], 'late-response').touch()
             sys.exit(0 if response.status == 200 else 1)
     except Exception: sys.exit(1)
 pathlib.Path(os.environ['PID_MARKER']).write_text(str(os.getpid()))
+if os.environ['CASE'] == 'exited': sys.exit(17)
+probes = 0
 assert pathlib.Path.cwd().resolve() == pathlib.Path(os.environ['HITKEEP_DB_PATH']).parent.resolve()
 for key in ('HITKEEP_DATA_PATH', 'HITKEEP_ARCHIVE_PATH'):
     assert pathlib.Path(os.environ[key]).parent.resolve() == pathlib.Path.cwd().resolve()
@@ -25,7 +29,10 @@ assert os.environ['HITKEEP_SPAM_FILTER_AUTO_UPDATE'] == 'false'
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/healthz':
-            self.send_response(503 if os.environ['CASE'] == 'unhealthy' else 200)
+            global probes
+            probes += 1
+            unavailable = os.environ['CASE'] == 'unhealthy' or (os.environ['CASE'] == 'delayed' and probes <= 32)
+            self.send_response(503 if unavailable else 200)
             body = b'healthy'
         else:
             self.send_response(200)
@@ -40,6 +47,17 @@ http.server.HTTPServer((host, int(port)), Handler).serve_forever()
     harness = temp / 'formula-test.rb'
     harness.write_text('''require 'pathname'
 require 'socket'
+# Advance the clock inside the last successful probe to exercise the cutoff.
+module FixtureClock
+  def clock_gettime(clock, *units)
+    value = super
+    return value unless clock == Process::CLOCK_MONOTONIC && units.empty?
+    return value * 20 if ENV['CASE'] == 'unhealthy'
+    return value + 91 if ENV['CASE'] == 'late' && File.exist?(File.join(ENV.fetch('SCRATCH'), 'late-response'))
+    value
+  end
+end
+Process.singleton_class.prepend(FixtureClock)
 class Formula
   def self.method_missing(*); end
   def self.test(&block); define_method(:smoke, &block); end
@@ -57,8 +75,9 @@ class Formula
   end
   def quiet_system(*args); Kernel.system(*args, out: File::NULL, err: File::NULL); end
   def assert(value, message = 'assertion failed'); raise message unless value; end
+  def flunk(message); raise message; end
   def assert_equal(expected, actual); assert(expected == actual); end
-  def assert_operator(value, operator, expected); assert(value.public_send(operator, expected)); end
+  def assert_operator(value, operator, expected, *message); assert(value.public_send(operator, expected), *message); end
   def assert_match(expected, actual); assert(expected.match?(actual)); end
   def refute_match(expected, actual); assert(!expected.match?(actual)); end
   def sleep(_); Kernel.sleep(0.02); end
@@ -67,13 +86,16 @@ end
 load ARGV.fetch(0)
 Hitkeep.new.smoke
 ''')
-    for case in ('healthy', 'placeholder', 'unhealthy'):
+    for case in ('healthy', 'delayed', 'late', 'placeholder', 'unhealthy', 'exited'):
         scratch = temp / case
         scratch.mkdir()
         marker = scratch / 'pid'
         env = dict(os.environ, CASE=case, PID_MARKER=str(marker), SCRATCH=str(scratch), FAKE_BIN=str(binary), SMOKE_LOG=str(scratch / 'fake.log'))
-        result = subprocess.run(['ruby', str(harness), os.environ.get('FORMULA_PATH', str(root / 'Formula/hitkeep.rb'))], env=env, capture_output=True, text=True)
-        assert (result.returncode == 0) == (case == 'healthy'), (case, result.stdout, result.stderr, (scratch / 'fake.log').read_text() if (scratch / 'fake.log').exists() else '')
+        result = subprocess.run(['ruby', str(harness), os.environ.get('FORMULA_PATH', str(root / 'Formula/hitkeep.rb'))], env=env, capture_output=True, text=True, timeout=30)
+        assert (result.returncode == 0) == (case in ('healthy', 'delayed')), (case, result.stdout, result.stderr, (scratch / 'fake.log').read_text() if (scratch / 'fake.log').exists() else '')
+        if case == 'late': assert (scratch / 'late-response').exists()
+        if case in ('late', 'unhealthy'): assert 'did not become healthy' in result.stderr
+        if case == 'exited': assert 'exit 17' in result.stderr
         assert marker.exists(), (case, 'server never started')
         try: os.kill(int(marker.read_text()), 0)
         except ProcessLookupError: pass
