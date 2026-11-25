@@ -9,7 +9,7 @@ with tempfile.TemporaryDirectory() as temporary:
     binary = temp / 'bin'
     binary.mkdir()
     (binary / 'hitkeep').write_text('''#!/usr/bin/env python3
-import http.server, os, pathlib, sys, urllib.request
+import http.server, os, pathlib, socketserver, sys, urllib.request
 address = os.environ['HITKEEP_HTTP_ADDR']
 if '-healthcheck' in sys.argv:
     try:
@@ -39,7 +39,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *args): pass
 host, port = address.split(':')
-http.server.HTTPServer((host, int(port)), Handler).serve_forever()
+with socketserver.TCPServer((host, int(port)), Handler) as server:
+    server.serve_forever()
 ''')
     (binary / 'hitkeep').chmod(0o755)
     harness = temp / 'formula-test.rb'
