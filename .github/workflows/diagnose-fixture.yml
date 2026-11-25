@@ -1,0 +1,20 @@
+name: Inspect macOS formula test phases
+on:
+  push:
+    branches: [qa/2183-macos-fixture]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: macos-26
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Measure fixture boundaries and locally scoped subprocesses
+        run: |
+          which ruby python3
+          ruby -v
+          python3 -V
+          ./tests/test-formula-smoke.sh

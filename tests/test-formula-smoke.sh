@@ -27,6 +27,8 @@ assert len(os.environ['HITKEEP_JWT_SECRET']) >= 32
 assert os.environ['HITKEEP_SPAM_FILTER_AUTO_UPDATE'] == 'false'
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if os.environ['CASE'] == 'delayed':
+            print('http',self.path, file=sys.stderr, flush=True)
         if self.path == '/healthz':
             self.send_response(503 if os.environ['CASE'] == 'unhealthy' else 200)
             body = b'healthy'
@@ -41,7 +43,12 @@ http.server.HTTPServer((host, int(port)), Handler).serve_forever()
 ''')
     (binary / 'hitkeep').chmod(0o755)
     harness = temp / 'formula-test.rb'
-    harness.write_text('''require 'pathname'
+    harness.write_text('''STDERR.sync = true
+Thread.new do
+  Kernel.sleep(10)
+  warn "main thread at 10s: " + Thread.main.backtrace.first(8).join(" | ")
+end
+require 'pathname'
 require 'socket'
 # Advance the clock inside the last successful probe to exercise the cutoff.
 module FixtureClock
@@ -73,9 +80,12 @@ class Formula
     # The delayed fixture needs 32 failed probes, independent of interpreter startup time.
     if ENV['CASE'] == 'delayed'
       @probes = @probes.to_i + 1
+      warn "probe #{@probes} monotonic=#{Process.clock_gettime(Process::CLOCK_MONOTONIC)}" if [1, 2, 16, 32, 33, 34, 64].include?(@probes)
       return false if @probes <= 32
     end
-    Kernel.system(*args, out: File::NULL, err: File::NULL)
+    value = Kernel.system(*args, out: File::NULL, err: File::NULL)
+    warn "real health returned #{value}" if ENV['CASE'] == 'delayed' && @probes < 38
+    value
   end
   def assert(value, message = 'assertion failed'); raise message unless value; end
   def flunk(message); raise message; end
@@ -101,8 +111,10 @@ Hitkeep.new.smoke
                 stdout, stderr = proc.communicate(timeout=30)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
-                proc.communicate()
+                out, err = proc.communicate()
+                print('timed out',case,'ruby:',err[-1500:],'stdout:',out[-300:],'server:',(scratch/'fake.log').read_text()[-500:] if (scratch/'fake.log').is_file() else 'absent',flush=True)
                 raise
+        if case == 'delayed': print('delayed ruby:', stderr[-1000:], 'server:', (scratch/'fake.log').read_text()[-400:], flush=True)
         assert (proc.returncode == 0) == (case in ('healthy', 'delayed')), (case, stdout, stderr, (scratch / 'fake.log').read_text() if (scratch / 'fake.log').exists() else '')
         if case == 'late': assert (scratch / 'late-response').exists()
         if case in ('late', 'unhealthy'): assert 'did not become healthy' in stderr
